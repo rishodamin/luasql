@@ -1009,5 +1009,6 @@ LUASQL_API int luaopen_luasql_oci8 (lua_State *L) {
 	lua_newtable (L);
 	luaL_setfuncs (L, driver, 0);
 	luasql_set_info (L);
+	luasql_set_types (L);
 	return 1;
 }

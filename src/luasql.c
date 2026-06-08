@@ -117,6 +117,41 @@ LUASQL_API void luasql_setmeta (lua_State *L, const char *name) {
 
 
 /*
+** Creates a "type" sub-table on the module table (assumed on top of stack).
+** Registers driver-agnostic type constants: int, number, string, boolean,
+** date, time, timestamp, null.
+*/
+LUASQL_API void luasql_set_types (lua_State *L) {
+	lua_newtable (L);
+	lua_pushliteral (L, "int");
+	lua_pushinteger (L, LUASQL_TYPE_INT);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "number");
+	lua_pushinteger (L, LUASQL_TYPE_NUMBER);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "string");
+	lua_pushinteger (L, LUASQL_TYPE_STRING);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "boolean");
+	lua_pushinteger (L, LUASQL_TYPE_BOOLEAN);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "date");
+	lua_pushinteger (L, LUASQL_TYPE_DATE);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "time");
+	lua_pushinteger (L, LUASQL_TYPE_TIME);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "timestamp");
+	lua_pushinteger (L, LUASQL_TYPE_TIMESTAMP);
+	lua_settable (L, -3);
+	lua_pushliteral (L, "null");
+	lua_pushinteger (L, LUASQL_TYPE_NULL);
+	lua_settable (L, -3);
+	lua_setfield (L, -2, "type");
+}
+
+
+/*
 ** Assumes the table is on top of the stack.
 */
 LUASQL_API void luasql_set_info (lua_State *L) {
