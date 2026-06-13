@@ -23,6 +23,7 @@
 #define LUASQL_ENVIRONMENT_OCI8 "Oracle environment"
 #define LUASQL_CONNECTION_OCI8 "Oracle connection"
 #define LUASQL_CURSOR_OCI8 "Oracle cursor"
+#define LUASQL_STATEMENT_OCI8 "Oracle statement"
 
 typedef struct {
 	short         closed;
@@ -37,11 +38,20 @@ typedef struct {
 	short         loggedon;
 	short         auto_commit;        /* 0 for manual commit */
 	int           cur_counter;
+	int           stmt_counter;
 	int           env;                /* reference to environment */
 	OCISvcCtx    *svchp;              /* service handle */
 	OCIError     *errhp; /* !!! */
 } conn_data;
 
+typedef struct {
+	short       closed;
+    OCIStmt    *stmthp;      /* statement handle, OCIStmtPrepare2 */
+    OCIError   *errhp;      
+    int         conn;       
+    ub2         type;        /* OCI_STMT_SELECT or DML */
+    int         cursor_open; /* bool: 1 = cursor active, 0 = none */
+} stmt_data;
 
 typedef union {
 	int     i;
@@ -114,6 +124,16 @@ static cur_data *getcursor (lua_State *L) {
 	luaL_argcheck (L, cur != NULL, 1, LUASQL_PREFIX"cursor expected");
 	luaL_argcheck (L, !cur->closed, 1, LUASQL_PREFIX"cursor is closed");
 	return cur;
+}
+
+/*
+** Check for valid statement.
+*/
+static stmt_data *getstatement (lua_State *L) {
+	stmt_data *stmt = (stmt_data *)luaL_checkudata (L, 1, LUASQL_STATEMENT_OCI8);
+	luaL_argcheck (L, stmt != NULL, 1, LUASQL_PREFIX"statement expected");
+	luaL_argcheck (L, !stmt->closed, 1, LUASQL_PREFIX"statement is closed");
+	return stmt;
 }
 
 
@@ -667,6 +687,11 @@ static int conn_close (lua_State *L) {
 		lua_pushstring (L, "There are open cursors");
 		return 2;
 	}
+	if (conn->stmt_counter > 0){
+		lua_pushboolean (L, 0);
+		lua_pushstring (L, "There are open statements");
+		return 2;
+	}
 
 	/* Nullify structure fields. */
 	conn->closed = 1;
@@ -801,6 +826,98 @@ static int conn_execute (lua_State *L) {
 	}
 }
 
+/*
+** Close a prepared statement.
+*/
+static int stmt_close (lua_State *L) {
+	conn_data *conn;
+	stmt_data *stmt = (stmt_data *)luaL_checkudata (L, 1, LUASQL_STATEMENT_OCI8);
+	luaL_argcheck (L, stmt != NULL, 1, LUASQL_PREFIX"statement expected");
+	if (stmt->closed) {
+		lua_pushboolean (L, 0);
+		lua_pushstring (L, "Statement is already closed");
+		return 2;
+	}
+	if (stmt->cursor_open) {
+		lua_pushboolean (L, 0);
+		lua_pushstring (L, LUASQL_PREFIX"cannot close statement with open cursor");
+		return 2;
+	}
+
+	stmt->closed = 1;
+	if (stmt->stmthp) {
+		OCIStmtRelease (stmt->stmthp, stmt->errhp, NULL, 0, OCI_DEFAULT);
+		stmt->stmthp = NULL;
+	}
+	if (stmt->errhp) {
+		OCIHandleFree ((dvoid *)stmt->errhp, OCI_HTYPE_ERROR);
+		stmt->errhp = NULL;
+	}
+
+	/* Decrement statement counter on connection object */
+	lua_rawgeti (L, LUA_REGISTRYINDEX, stmt->conn);
+	conn = lua_touserdata (L, -1);
+	conn->stmt_counter--;
+	luaL_unref (L, LUA_REGISTRYINDEX, stmt->conn);
+
+	lua_pushboolean (L, 1);
+	return 1;
+}
+
+
+/*
+** Prepares an SQL statement.
+** Returns the statement object.
+*/
+static int conn_prepare (lua_State *L) {
+	env_data *env;
+	conn_data *conn = getconnection (L);
+	const char *statement = luaL_checkstring (L, 2);
+	ub2 type;
+	OCIStmt *stmthp;
+
+	/* get environment */
+	lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
+	if (!lua_isuserdata (L, -1))
+		luaL_error(L,LUASQL_PREFIX"invalid environment in connection!");
+	env = (env_data *)lua_touserdata (L, -1);
+	lua_pop (L, 1); 
+	
+	/* prepare statement via OCIStmtPrepare2 (allocates handle internally) */
+	ASSERT (L, OCIStmtPrepare2 (conn->svchp, &stmthp, conn->errhp,
+		(text *)statement, (ub4) strlen(statement),
+		(text *)NULL, (ub4) 0,
+		(ub4) OCI_NTV_SYNTAX, (ub4) OCI_DEFAULT),
+		conn->errhp);
+
+	/* get statement type */
+	ASSERT (L, OCIAttrGet ((dvoid *)stmthp, (ub4) OCI_HTYPE_STMT,
+		(dvoid *)&type, (ub4 *)0, (ub4)OCI_ATTR_STMT_TYPE, conn->errhp),
+		conn->errhp);
+
+	/* create a new statement userdata */
+	stmt_data *stmt = (stmt_data *)LUASQL_NEWUD(L, sizeof(stmt_data));
+	luasql_setmeta (L, LUASQL_STATEMENT_OCI8);
+
+	/* fill in structure */
+	stmt->closed = 0;
+	stmt->stmthp = stmthp;
+	stmt->errhp = NULL;
+	stmt->type = type;
+	stmt->cursor_open = 0;
+	lua_pushvalue (L, 1);
+	stmt->conn = luaL_ref (L, LUA_REGISTRYINDEX);
+
+	/* allocate a private error handle for the statement */
+	ASSERT (L, OCIHandleAlloc ((dvoid *)env->envhp,
+		(dvoid **)&(stmt->errhp), (ub4) OCI_HTYPE_ERROR, (size_t) 0,
+		(dvoid **) 0), conn->errhp);
+
+	conn->stmt_counter++;
+
+	return 1;
+}
+
 
 /*
 ** Commit the current transaction.
@@ -875,6 +992,7 @@ static int env_connect (lua_State *L) {
 	conn->closed = 1;
 	conn->auto_commit = 1;
 	conn->cur_counter = 0;
+	conn->stmt_counter = 0;
 	conn->loggedon = 0;
 	conn->svchp = NULL;
 	conn->errhp = NULL;
@@ -974,6 +1092,7 @@ static void create_metatables (lua_State *L) {
 		{"__close", conn_close},
 		{"close", conn_close},
 		{"execute", conn_execute},
+		{"prepare", conn_prepare},
 		{"commit", conn_commit},
 		{"rollback", conn_rollback},
 		{"setautocommit", conn_setautocommit},
@@ -989,10 +1108,17 @@ static void create_metatables (lua_State *L) {
 		{"numrows", cur_numrows},
 		{NULL, NULL},
 	};
+	struct luaL_Reg statement_methods[] = {
+		{"__gc", stmt_close},
+		{"__close", stmt_close},
+		{"close", stmt_close},
+		{NULL, NULL},
+	};
 	luasql_createmeta (L, LUASQL_ENVIRONMENT_OCI8, environment_methods);
 	luasql_createmeta (L, LUASQL_CONNECTION_OCI8, connection_methods);
 	luasql_createmeta (L, LUASQL_CURSOR_OCI8, cursor_methods);
-	lua_pop (L, 3);
+	luasql_createmeta (L, LUASQL_STATEMENT_OCI8, statement_methods);
+	lua_pop (L, 4);
 }
 
 
