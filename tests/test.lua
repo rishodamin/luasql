@@ -807,7 +807,7 @@ tests = {
 	{ "get column information", column_info },
 	{ "extensions", extensions_test },
 	{ "close objects", check_close },
--- to-be-closed variables could be inserted here
+-- to-be-closed variables would be inserted here
 	{ "drop table", drop_table },
 	{ "close connection", close_conn },
 	{ "finalization", finalization },
@@ -822,8 +822,8 @@ if string.find(_VERSION, " 5.0") then
 	end
 else
 	luasql = require ("luasql."..driver)
-	if string.find(_VERSION, " 5.4")
-		or string.find(_VERSION, " 5.5") then
+	local major, minor = _VERSION:match" (%d)%.(%d+)"
+	if tonumber(minor) >= 4 then
 		table.insert (tests, 11, { "to-be-closed support", to_be_closed_support })
 	end
 end
