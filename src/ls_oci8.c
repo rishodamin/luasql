@@ -37,8 +37,8 @@ typedef struct {
 	short         closed;
 	short         loggedon;
 	short         auto_commit;        /* 0 for manual commit */
-	int           cur_counter;
-	int           stmt_counter;
+	int           cur_counter;  /* number of open cursors */
+	int           stmt_counter; /* number of open statements */
 	int           env;                /* reference to environment */
 	OCISvcCtx    *svchp;              /* service handle */
 	OCIError     *errhp; /* !!! */
@@ -48,7 +48,7 @@ typedef struct {
 	short       closed;
     OCIStmt    *stmthp;      /* statement handle, OCIStmtPrepare2 */
     OCIError   *errhp;      
-    int         conn;       
+    int         conn;        /* reference to connection in registry */
     ub2         type;        /* OCI_STMT_SELECT or DML */
     int         cursor_open; /* bool: 1 = cursor active, 0 = none */
 } stmt_data;
@@ -134,6 +134,22 @@ static stmt_data *getstatement (lua_State *L) {
 	luaL_argcheck (L, stmt != NULL, 1, LUASQL_PREFIX"statement expected");
 	luaL_argcheck (L, !stmt->closed, 1, LUASQL_PREFIX"statement is closed");
 	return stmt;
+}
+
+
+/*
+** Retrieve the environment from a connection's registry reference.
+** The connection stores a Lua registry ref to its parent environment;
+** this helper dereferences it and returns the env_data pointer.
+*/
+static env_data *getenvfromconn (lua_State *L, conn_data *conn) {
+	env_data *env;
+	lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
+	if (!lua_isuserdata (L, -1))
+		luaL_error (L, LUASQL_PREFIX"invalid environment in connection!");
+	env = (env_data *)lua_touserdata (L, -1);
+	lua_pop (L, 1);
+	return env;
 }
 
 
@@ -245,13 +261,12 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP
 		case SQLT_TIMESTAMP: {
-			env_data *env;
 			conn_data *conn;
+			env_data *env;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
-			lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-			env = (env_data *)lua_touserdata (L, -1);
-			lua_pop (L, 2);
+			lua_pop (L, 1);
+			env = getenvfromconn (L, conn);
 			ASSERT (L, OCIDescriptorAlloc (env->envhp,(dvoid*)&(col->val.datetime),
 				OCI_DTYPE_TIMESTAMP, 0, (void **)0), cur->errhp);
 			ASSERT (L, OCIDefineByPos (cur->stmthp, &(col->define), cur->errhp,
@@ -263,13 +278,12 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP_TZ
 		case SQLT_TIMESTAMP_TZ: {
-			env_data *env;
 			conn_data *conn;
+			env_data *env;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
-			lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-			env = (env_data *)lua_touserdata (L, -1);
-			lua_pop (L, 2);
+			lua_pop (L, 1);
+			env = getenvfromconn (L, conn);
 			ASSERT (L, OCIDescriptorAlloc (env->envhp,(dvoid*)&(col->val.datetime),
 				OCI_DTYPE_TIMESTAMP_TZ, 0, (void **)0), cur->errhp);
 			ASSERT (L, OCIDefineByPos (cur->stmthp, &(col->define), cur->errhp,
@@ -281,13 +295,12 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP_LTZ
 		case SQLT_TIMESTAMP_LTZ: {
-			env_data *env;
 			conn_data *conn;
+			env_data *env;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
-			lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-			env = (env_data *)lua_touserdata (L, -1);
-			lua_pop (L, 2);
+			lua_pop (L, 1);
+			env = getenvfromconn (L, conn);
 			ASSERT (L, OCIDescriptorAlloc (env->envhp,(dvoid*)&(col->val.datetime),
 				OCI_DTYPE_TIMESTAMP_LTZ, 0, (void **)0), cur->errhp);
 			ASSERT (L, OCIDefineByPos (cur->stmthp, &(col->define), cur->errhp,
@@ -307,13 +320,12 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 				(ub2 *)0, (ub4) OCI_DEFAULT), cur->errhp);
 			break;
 		case SQLT_CLOB: {
-			env_data *env;
 			conn_data *conn;
+			env_data *env;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
-			lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-			env = (env_data *)lua_touserdata (L, -1);
-			lua_pop (L, 2);
+			lua_pop (L, 1);
+			env = getenvfromconn (L, conn);
 			ASSERT (L, OCIDescriptorAlloc (env->envhp, (dvoid *)&(col->val.s),
 				OCI_DTYPE_LOB, (size_t)0, (dvoid **)0), cur->errhp);
 			ASSERT (L, OCIDefineByPos (cur->stmthp, &(col->define),
@@ -432,9 +444,8 @@ static int pushvalue (lua_State *L, cur_data *cur, int i) {
 			env_data *env;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = lua_touserdata (L, -1);
-			lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-			env = lua_touserdata (L, -1);
-			lua_pop (L, 2);
+			lua_pop (L, 1);
+			env = getenvfromconn (L, conn);
 			text buf[65];
 			ub4 buflen = sizeof(buf);
 			ASSERT (L, OCIDateTimeToText (env->envhp, cur->errhp, col->val.datetime,
@@ -449,9 +460,8 @@ static int pushvalue (lua_State *L, cur_data *cur, int i) {
 			env_data *env;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = lua_touserdata (L, -1);
-			lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-			env = lua_touserdata (L, -1);
-			lua_pop (L, 2);
+			lua_pop (L, 1);
+			env = getenvfromconn (L, conn);
 			ASSERT (L, OCILobGetLength (conn->svchp, cur->errhp,
 				(OCILobLocator *)col->val.s, &lob_len), cur->errhp);
 			if (lob_len > 0) {
@@ -704,8 +714,7 @@ static int conn_close (lua_State *L) {
 	if (conn->errhp)
 		OCIHandleFree ((dvoid *)conn->errhp, OCI_HTYPE_ERROR);
 	/* Decrement connection counter on environment object */
-	lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-	env = lua_touserdata (L, -1);
+	env = getenvfromconn (L, conn);
 	env->conn_counter--;
 	luaL_unref (L, LUA_REGISTRYINDEX, conn->env);
 
@@ -738,9 +747,7 @@ static int create_cursor (lua_State *L, int o, conn_data *conn, OCIStmt *stmt, c
 	cur->conn = luaL_ref (L, LUA_REGISTRYINDEX);
 
 	/* error handler */
-	lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-	env = lua_touserdata (L, -1);
-	lua_pop (L, 1);
+	env = getenvfromconn (L, conn);
 	ASSERT (L, OCIHandleAlloc((dvoid *) env->envhp,
 		(dvoid **) &(cur->errhp), (ub4) OCI_HTYPE_ERROR, (size_t) 0,
 		(dvoid **) 0), conn->errhp);
@@ -779,10 +786,7 @@ static int conn_execute (lua_State *L) {
 	OCIStmt *stmthp;
 
 	/* get environment */
-	lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-	if (!lua_isuserdata (L, -1))
-		luaL_error(L,LUASQL_PREFIX"invalid environment in connection!");
-	env = (env_data *)lua_touserdata (L, -1);
+	env = getenvfromconn (L, conn);
 	/* statement handle */
 	ASSERT (L, OCIHandleAlloc ((dvoid *)env->envhp, (dvoid **)&stmthp,
 		OCI_HTYPE_STMT, (size_t)0, (dvoid **)0), conn->errhp);
@@ -875,14 +879,11 @@ static int conn_prepare (lua_State *L) {
 	const char *statement = luaL_checkstring (L, 2);
 	ub2 type;
 	OCIStmt *stmthp;
+	OCIError *errhp = NULL;
 
 	/* get environment */
-	lua_rawgeti (L, LUA_REGISTRYINDEX, conn->env);
-	if (!lua_isuserdata (L, -1))
-		luaL_error(L,LUASQL_PREFIX"invalid environment in connection!");
-	env = (env_data *)lua_touserdata (L, -1);
-	lua_pop (L, 1); 
-	
+	env = getenvfromconn (L, conn);
+
 	/* prepare statement via OCIStmtPrepare2 (allocates handle internally) */
 	ASSERT (L, OCIStmtPrepare2 (conn->svchp, &stmthp, conn->errhp,
 		(text *)statement, (ub4) strlen(statement),
@@ -890,28 +891,39 @@ static int conn_prepare (lua_State *L) {
 		(ub4) OCI_NTV_SYNTAX, (ub4) OCI_DEFAULT),
 		conn->errhp);
 
-	/* get statement type */
-	ASSERT (L, OCIAttrGet ((dvoid *)stmthp, (ub4) OCI_HTYPE_STMT,
-		(dvoid *)&type, (ub4 *)0, (ub4)OCI_ATTR_STMT_TYPE, conn->errhp),
-		conn->errhp);
+	/* get statement type. If it fails, release stmthp */
+	{
+		sword s = OCIAttrGet ((dvoid *)stmthp, (ub4) OCI_HTYPE_STMT,
+			(dvoid *)&type, (ub4 *)0, (ub4)OCI_ATTR_STMT_TYPE, conn->errhp);
+		if (s) {
+			OCIStmtRelease (stmthp, conn->errhp, NULL, 0, OCI_DEFAULT);
+			return checkerr (L, s, conn->errhp);
+		}
+	}
 
-	/* create a new statement userdata */
+	/* allocate error handle. If it fails, release stmthp */
+	{
+		sword s = OCIHandleAlloc ((dvoid *)env->envhp,
+			(dvoid **)&errhp, (ub4) OCI_HTYPE_ERROR, (size_t) 0,
+			(dvoid **) 0);
+		if (s) {
+			OCIStmtRelease (stmthp, conn->errhp, NULL, 0, OCI_DEFAULT);
+			return checkerr (L, s, conn->errhp);
+		}
+	}
+
+	/* Create userdata  */
 	stmt_data *stmt = (stmt_data *)LUASQL_NEWUD(L, sizeof(stmt_data));
 	luasql_setmeta (L, LUASQL_STATEMENT_OCI8);
 
 	/* fill in structure */
 	stmt->closed = 0;
 	stmt->stmthp = stmthp;
-	stmt->errhp = NULL;
+	stmt->errhp = errhp;
 	stmt->type = type;
 	stmt->cursor_open = 0;
 	lua_pushvalue (L, 1);
 	stmt->conn = luaL_ref (L, LUA_REGISTRYINDEX);
-
-	/* allocate a private error handle for the statement */
-	ASSERT (L, OCIHandleAlloc ((dvoid *)env->envhp,
-		(dvoid **)&(stmt->errhp), (ub4) OCI_HTYPE_ERROR, (size_t) 0,
-		(dvoid **) 0), conn->errhp);
 
 	conn->stmt_counter++;
 

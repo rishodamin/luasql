@@ -117,9 +117,41 @@ LUASQL_API void luasql_setmeta (lua_State *L, const char *name) {
 
 
 /*
+** __index metamethod for the "type" table.
+** Only called when a key is NOT found in the table, so valid lookups
+** (e.g. luasql.type.int) have zero overhead.  On a miss it throws an
+** informative error listing every valid type name.
+*/
+static int luasql_type_index (lua_State *L) {
+	const char *key = luaL_checkstring (L, 2);
+	luaL_Buffer b;
+	int first = 1;
+
+	luaL_buffinit (L, &b);
+	luaL_addstring (&b, LUASQL_PREFIX "invalid type '");
+	luaL_addstring (&b, key);
+	luaL_addstring (&b, "', expected one of: ");
+
+	/* iterate the type table (arg 1) to collect valid key names */
+	lua_pushnil (L);
+	while (lua_next (L, 1) != 0) {
+		if (!first)
+			luaL_addstring (&b, ", ");
+		luaL_addstring (&b, lua_tostring (L, -2));
+		first = 0;
+		lua_pop (L, 1);  /* pop value, keep key for next iteration */
+	}
+
+	luaL_pushresult (&b);
+	return lua_error (L);
+}
+
+
+/*
 ** Creates a "type" sub-table on the module table (assumed on top of stack).
 ** Registers driver-agnostic type constants: int, number, string, boolean,
 ** date, time, timestamp, null.
+** Sets an __index metamethod that throws on unknown keys.
 */
 LUASQL_API void luasql_set_types (lua_State *L) {
 	lua_newtable (L);
@@ -139,6 +171,13 @@ LUASQL_API void luasql_set_types (lua_State *L) {
 	lua_setfield (L, -2, "timestamp");
 	lua_pushinteger (L, LUASQL_TYPE_NULL);
 	lua_setfield (L, -2, "null");
+
+	/* attach metatable with __index that errors on unknown keys */
+	lua_newtable (L);                                  /* metatable */
+	lua_pushcfunction (L, luasql_type_index);
+	lua_setfield (L, -2, "__index");
+	lua_setmetatable (L, -2);              /* setmetatable(type_tbl, mt) */
+
 	lua_setfield (L, -2, "type");
 }
 
