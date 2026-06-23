@@ -762,6 +762,25 @@ function numrows()
 	io.write (" numrows")
 end
 
+---------------------------------------------------------------------
+-- Test luasql.type constants and the __index error on unknown keys.
+---------------------------------------------------------------------
+function type_constants_test ()
+	assert (type(luasql.type) == "table", "luasql.type is not a table")
+
+	-- check each constant exists and is a number
+	local expected = { "int", "number", "string", "boolean", "date", "time", "timestamp", "null" }
+	for _, name in ipairs(expected) do
+		assert2 ("number", type(luasql.type[name]),
+			"luasql.type."..name.." should be a number")
+	end
+
+	-- check that an unknown key raises an error
+	local ok, err = pcall(function () return luasql.type.nul end)
+	assert2 (false, ok, "luasql.type.nul should raise an error")
+	assert (err:find("nul"), "error message should mention the unknown key")
+end
+
 
 ---------------------------------------------------------------------
 -- Main
@@ -798,6 +817,7 @@ password = arg[4] or DEFAULT_PASSWORD or nil
 -- Complete set of tests
 tests = {
 	{ "basic checking", basic_test },
+	{ "type constants", type_constants_test },
 	{ "create table", create_table },
 	{ "fetch two values", fetch2 },
 	{ "fetch new table", fetch_new_table },
@@ -824,7 +844,7 @@ else
 	luasql = require ("luasql."..driver)
 	local major, minor = _VERSION:match" (%d)%.(%d+)"
 	if tonumber(minor) >= 4 then
-		table.insert (tests, 11, { "to-be-closed support", to_be_closed_support })
+		table.insert (tests, #tests - 2, { "to-be-closed support", to_be_closed_support })
 	end
 end
 assert (luasql, "Could not load driver: no luasql table.")

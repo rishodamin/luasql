@@ -37,11 +37,11 @@ typedef struct {
 	short         closed;
 	short         loggedon;
 	short         auto_commit;        /* 0 for manual commit */
-	int           cur_counter;  /* number of open cursors */
-	int           stmt_counter; /* number of open statements */
+	int           cur_counter;        /* number of open cursors */
+	int           stmt_counter;       /* number of open statements */
 	int           env;                /* reference to environment */
 	OCISvcCtx    *svchp;              /* service handle */
-	OCIError     *errhp; /* !!! */
+	OCIError     *errhp;              /* !!! */
 } conn_data;
 
 typedef struct {
@@ -85,7 +85,7 @@ typedef struct {
 	int           curr_tuple;         /* next tuple to be read */
 	char         *text;               /* text of SQL statement */
 	OCIStmt      *stmthp;             /* statement handle */
-	OCIError     *errhp; /* !!! */
+	OCIError     *errhp;              /* !!! */
 	column_data  *cols;               /* array of columns */
 } cur_data;
 
@@ -261,8 +261,8 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP
 		case SQLT_TIMESTAMP: {
-			conn_data *conn;
 			env_data *env;
+			conn_data *conn;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
 			lua_pop (L, 1);
@@ -278,8 +278,8 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP_TZ
 		case SQLT_TIMESTAMP_TZ: {
-			conn_data *conn;
 			env_data *env;
+			conn_data *conn;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
 			lua_pop (L, 1);
@@ -295,8 +295,8 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP_LTZ
 		case SQLT_TIMESTAMP_LTZ: {
-			conn_data *conn;
 			env_data *env;
+			conn_data *conn;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
 			lua_pop (L, 1);
@@ -320,8 +320,8 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 				(ub2 *)0, (ub4) OCI_DEFAULT), cur->errhp);
 			break;
 		case SQLT_CLOB: {
-			conn_data *conn;
 			env_data *env;
+			conn_data *conn;
 			lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
 			conn = (conn_data *)lua_touserdata (L, -1);
 			lua_pop (L, 1);
@@ -884,6 +884,16 @@ static int conn_prepare (lua_State *L) {
 	/* get environment */
 	env = getenvfromconn (L, conn);
 
+	/* Allocate userdata before OCI allocations so it doesn't leak on out of memory.
+	   Do NOT set the metatable yet to prevent __gc on uninitialized data. */
+	stmt_data *stmt = (stmt_data *)LUASQL_NEWUD(L, sizeof(stmt_data));
+	stmt->closed = 1;
+	stmt->stmthp = NULL;
+	stmt->errhp = NULL;
+	stmt->type = 0;
+	stmt->cursor_open = 0;
+	stmt->conn = LUA_NOREF;
+
 	/* prepare statement via OCIStmtPrepare2 (allocates handle internally) */
 	ASSERT (L, OCIStmtPrepare2 (conn->svchp, &stmthp, conn->errhp,
 		(text *)statement, (ub4) strlen(statement),
@@ -912,16 +922,13 @@ static int conn_prepare (lua_State *L) {
 		}
 	}
 
-	/* Create userdata  */
-	stmt_data *stmt = (stmt_data *)LUASQL_NEWUD(L, sizeof(stmt_data));
+	/* All OCI resources ready. Attach metatable and finalize fields. */
 	luasql_setmeta (L, LUASQL_STATEMENT_OCI8);
 
-	/* fill in structure */
 	stmt->closed = 0;
 	stmt->stmthp = stmthp;
 	stmt->errhp = errhp;
 	stmt->type = type;
-	stmt->cursor_open = 0;
 	lua_pushvalue (L, 1);
 	stmt->conn = luaL_ref (L, LUA_REGISTRYINDEX);
 
