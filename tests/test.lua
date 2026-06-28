@@ -448,7 +448,7 @@ function unicode_values ()
 	local row = { cur:fetch () }
 	assert2 ("string", type(row[1]), "error while trying to fetch values")
 	assert2 ("1", row[1], "wrong value: expecting '1', got '"..tostring (row[1]).."'")
-	assert2 ("Áêìõü", row[2], "wrong value: expecting 'Áêìõü', got '"..tostring (row[1]).."'")
+	assert2 ("Áêìõü", row[2], "wrong value: expecting 'Áêìõü', got '"..tostring (row[2]).."'")
 	assert2 (nil, cur:fetch (row))
 	assert2 (false, cur:close(), MSG_CURSOR_NOT_CLOSED)
 	-- fetch row based on Unicode value
@@ -768,17 +768,24 @@ end
 function type_constants_test ()
 	assert (type(luasql.type) == "table", "luasql.type is not a table")
 
-	-- check each constant exists and is a number
-	local expected = { "int", "number", "string", "boolean", "date", "time", "timestamp", "null" }
-	for _, name in ipairs(expected) do
-		assert2 ("number", type(luasql.type[name]),
-			"luasql.type."..name.." should be a number")
-	end
-
-	-- check that an unknown key raises an error
+	-- check that an unknown key raises an error and lists exactly all expected types
 	local ok, err = pcall(function () return luasql.type.nul end)
 	assert2 (false, ok, "luasql.type.nul should raise an error")
-	assert (err:find("nul"), "error message should mention the unknown key")
+
+	-- The error message lists types in an undefined order (table iteration).
+	-- We extract them, sort them, and compare against the expected list.
+	local prefix = "LuaSQL: invalid type 'nul', expected one of: "
+	local msg_start = err:find(prefix, 1, true)
+	assert (msg_start, "error message missing expected prefix: " .. tostring(err))
+	
+	local types = {}
+	for t in err:sub(msg_start + #prefix):gmatch("[^, ]+") do
+		table.insert(types, t)
+	end
+	table.sort(types)
+
+	assert2 ("boolean, date, int, null, number, string, time, timestamp", table.concat(types, ", "),
+		"luasql.type contains unexpected or missing types")
 end
 
 

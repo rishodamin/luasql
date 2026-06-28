@@ -345,7 +345,7 @@ static int alloc_column_buffer (lua_State *L, cur_data *cur, int i) {
 /*
 ** Deallocate column buffers.
 */
-static int free_column_buffers (lua_State *L, cur_data *cur, int i) {
+static void free_column_buffers (lua_State *L, cur_data *cur, int i) {
 	/* column index ranges from 1 to numcols */
 	/* C array index ranges from 0 to numcols-1 */
 	column_data *col = &(cur->cols[i-1]);
@@ -368,32 +368,26 @@ static int free_column_buffers (lua_State *L, cur_data *cur, int i) {
 #endif
 #ifdef SQLT_TIMESTAMP
 		case SQLT_TIMESTAMP:
-			ASSERT (L, OCIDescriptorFree (col->val.datetime,
-				OCI_DTYPE_TIMESTAMP), cur->errhp);
+			OCIDescriptorFree (col->val.datetime, OCI_DTYPE_TIMESTAMP);
 			break;
 #endif
 #ifdef SQLT_TIMESTAMP_TZ
 		case SQLT_TIMESTAMP_TZ:
-			ASSERT (L, OCIDescriptorFree (col->val.datetime,
-				OCI_DTYPE_TIMESTAMP_TZ), cur->errhp);
+			OCIDescriptorFree (col->val.datetime, OCI_DTYPE_TIMESTAMP_TZ);
 			break;
 #endif
 #ifdef SQLT_TIMESTAMP_LTZ
 		case SQLT_TIMESTAMP_LTZ:
-			ASSERT (L, OCIDescriptorFree (col->val.datetime,
-				OCI_DTYPE_TIMESTAMP_LTZ), cur->errhp);
+			OCIDescriptorFree (col->val.datetime, OCI_DTYPE_TIMESTAMP_LTZ);
 			break;
 #endif
 		case SQLT_CLOB:
-			ASSERT (L, OCIDescriptorFree (col->val.s,
-				OCI_DTYPE_LOB), cur->errhp);
+			OCIDescriptorFree (col->val.s, OCI_DTYPE_LOB);
 			break;
 		default:
-			luaL_error (L, LUASQL_PREFIX"unknown type");
-			/*printf("free_buffers(): Unknown Type: %d count: %d\n",cols.item[count].type, count );*/
+			/* Ignore unknown types during cleanup */
 			break;
 	}
-    return 0;
 }
 
 
@@ -488,6 +482,50 @@ static int pushvalue (lua_State *L, cur_data *cur, int i) {
 
 
 /*
+** Closes the cursor and nullify all structure fields.
+*/
+static void cur_nullify (lua_State *L, cur_data *cur) {
+	int i;
+	conn_data *conn;
+
+	/* Deallocate buffers. */
+	for (i = 1; i <= cur->numcols; i++) {
+		free_column_buffers (L, cur, i);
+	}
+	free (cur->cols);
+	cur->cols = NULL;
+	free (cur->text);
+	cur->text = NULL;
+
+	/* Nullify structure fields. */
+	cur->closed = 1;
+	if (cur->stmthp) {
+		OCIHandleFree ((dvoid *)cur->stmthp, OCI_HTYPE_STMT);
+		cur->stmthp = NULL;
+	}
+	if (cur->errhp) {
+		OCIHandleFree ((dvoid *)cur->errhp, OCI_HTYPE_ERROR);
+		cur->errhp = NULL;
+	}
+
+	/* Decrement cursor counter on connection object */
+	if (cur->conn != LUA_NOREF) {
+		lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
+		conn = lua_touserdata (L, -1);
+		lua_pop (L, 1); /* Pop the connection object from the stack */
+		if (conn) conn->cur_counter--;
+		luaL_unref (L, LUA_REGISTRYINDEX, cur->conn);
+		cur->conn = LUA_NOREF;
+	}
+
+	luaL_unref (L, LUA_REGISTRYINDEX, cur->colnames);
+	cur->colnames = LUA_NOREF;
+	luaL_unref (L, LUA_REGISTRYINDEX, cur->coltypes);
+	cur->coltypes = LUA_NOREF;
+}
+
+
+/*
 ** Get another row of the given cursor.
 */
 static int cur_fetch (lua_State *L) {
@@ -496,7 +534,8 @@ static int cur_fetch (lua_State *L) {
 		OCI_FETCH_NEXT, OCI_DEFAULT);
 
 	if (status == OCI_NO_DATA) {
-		/* No more rows */
+		/* No more rows: auto-close the cursor */
+		cur_nullify (L, cur);
 		lua_pushnil (L);
 		return 1;
 	} else if (status != OCI_SUCCESS) {
@@ -546,8 +585,6 @@ static int cur_fetch (lua_State *L) {
 ** Return 1
 */
 static int cur_close (lua_State *L) {
-	int i;
-	conn_data *conn;
 	cur_data *cur = (cur_data *)luaL_checkudata (L, 1, LUASQL_CURSOR_OCI8);
 	luaL_argcheck (L, cur != NULL, 1, LUASQL_PREFIX"cursor expected");
 	if (cur->closed) {
@@ -556,31 +593,20 @@ static int cur_close (lua_State *L) {
 		return 2;
 	}
 
-	/* Deallocate buffers. */
-	for (i = 1; i <= cur->numcols; i++) {
-		int ret = free_column_buffers (L, cur, i);
-		if (ret)
-			return ret;
-	}
-	free (cur->cols);
-	free (cur->text);
-
-	/* Nullify structure fields. */
-	cur->closed = 1;
-	if (cur->stmthp)
-		OCIHandleFree ((dvoid *)cur->stmthp, OCI_HTYPE_STMT);
-	if (cur->errhp)
-		OCIHandleFree ((dvoid *)cur->errhp, OCI_HTYPE_ERROR);
-	/* Decrement cursor counter on connection object */
-	lua_rawgeti (L, LUA_REGISTRYINDEX, cur->conn);
-	conn = lua_touserdata (L, -1);
-	conn->cur_counter--;
-	luaL_unref (L, LUA_REGISTRYINDEX, cur->conn);
-	luaL_unref (L, LUA_REGISTRYINDEX, cur->colnames);
-	luaL_unref (L, LUA_REGISTRYINDEX, cur->coltypes);
+	cur_nullify (L, cur);
 
 	lua_pushboolean (L, 1);
 	return 1;
+}
+
+/*
+** Cursor object collector function
+*/
+static int cur_gc (lua_State *L) {
+	cur_data *cur = (cur_data *)luaL_checkudata (L, 1, LUASQL_CURSOR_OCI8);
+	if (cur != NULL && !(cur->closed))
+		cur_nullify (L, cur);
+	return 0;
 }
 
 
@@ -663,19 +689,6 @@ static int cur_getcoltypes (lua_State *L) {
 		lua_pushvalue (L, -1);
 		cur->coltypes = luaL_ref (L, LUA_REGISTRYINDEX);
 	}
-	return 1;
-}
-
-
-/*
-** Push the number of rows.
-*/
-static int cur_numrows (lua_State *L) {
-	int n;
-	cur_data *cur = getcursor (L);
-	ASSERT (L, OCIAttrGet ((dvoid *) cur->stmthp, OCI_HTYPE_STMT, (dvoid *)&n,
-		(ub4)0, OCI_ATTR_NUM_ROWS, cur->errhp), cur->errhp);
-	lua_pushnumber (L, n);
 	return 1;
 }
 
@@ -949,7 +962,8 @@ static int conn_commit (lua_State *L) {
 	if (conn->auto_commit == 0)
 		ASSERT (L, OCITransStart (conn->svchp, conn->errhp...
 */
-	return 0;
+	lua_pushboolean (L, 1);
+	return 1;
 }
 
 
@@ -964,7 +978,8 @@ static int conn_rollback (lua_State *L) {
 	if (conn->auto_commit == 0)
 		sql_begin(conn);
 */
-	return 0;
+	lua_pushboolean (L, 1);
+	return 1;
 }
 
 
@@ -1118,13 +1133,12 @@ static void create_metatables (lua_State *L) {
 		{NULL, NULL},
 	};
 	struct luaL_Reg cursor_methods[] = {
-		{"__gc", cur_close}, /* Should this method be changed? */
-		{"__close", cur_close},
+		{"__gc", cur_gc},
+		{"__close", cur_gc},
 		{"close", cur_close},
 		{"getcolnames", cur_getcolnames},
 		{"getcoltypes", cur_getcoltypes},
 		{"fetch", cur_fetch},
-		{"numrows", cur_numrows},
 		{NULL, NULL},
 	};
 	struct luaL_Reg statement_methods[] = {
